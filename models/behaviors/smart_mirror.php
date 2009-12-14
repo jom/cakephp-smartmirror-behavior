@@ -1,33 +1,100 @@
 <?php
-// @todo integrate find options into actual find calls (contains for organizations, for example)
+/**
+ * SmartMirror, CakePHP Behavior
+ * 		Mirrors data from one model to another
+ *
+ *
+ * Copyright 2009 Jacob Morrison <jomorrison gmail com>, http://projects.ofjacob.com/cakephp-smartmirror-behavior
+ *
+ * Licensed under The MIT License
+ * Redistributions of files must retain the above copyright notice.
+ *
+ * @copyright     Copyright 2009 Jacob Morrison <jomorrison gmail com>, http://projects.ofjacob.com
+ * @license       http://www.opensource.org/licenses/mit-license.php The MIT License
+ */
+
 class SmartMirrorBehavior extends ModelBehavior {
-    var $_smartMirrors = array();
-    var $_queue = null;
-    var $_stats = null;
+	/**
+	 * Current log level
+	 * 0: only critical errors, 1: severe errors, 2: warnings, 3: atypical informational, 4: informational
+	 * @var integer
+	 */
     var $_log_level = 2;
-    var $_with_models = false;
+
+	/**
+	 * Default settings to use for mirrors
+	 *
+	 * @var array
+	 */
     var $_default_settings = array(
-    'live' => false,
-    'dbConfig' => null,
-    'fieldMap' => array(),
-    'findOptions' => array(),
+    	'live' => false,	// do all actions instantly (hasn't been tested all that much)
+	    'dbConfig' => null, // force a specific database configuration to be used
+	    'fieldMap' => array(), // customize a fieldmap. like: array('PrimaryModelName.id' => 'MirrorModelName.id', 'PrimaryModelName.email' => 'MirrorModelName.electronic_mail')
+	    'findOptions' => array(), // if you want to specify options to your primary model's find (perhaps to pull out a subset of entries or get data from related models)
+	    'allowAlternativeAliases' => false, // in my setup, i didn't want model instances that had different aliases than their model names to do any smart mirroring
     );
 
+    /**
+	 * Array of tracked models and their mirrors
+	 *
+	 * @var array
+	 */
+    var $_smartMirrors = array();
+
+	/**
+	 * Loaded queue of actions
+	 *
+	 * @var array
+	 */
+    var $_queue = null;
+
+	/**
+	 * Loaded statistics of mirror actions
+	 *
+	 * @var array
+	 */
+    var $_stats = null;
+
+	/**
+	 * Is this instance part of a model?
+	 *
+	 * @var boolean
+	 */
+    var $_with_models = false;
+
+    /**
+     * Load stats and queue on startup
+     *
+     * @return boolean Result of initiating queue and stats
+     * @access private
+     */
     function __construct() {
         if(!$this->_loadStats() OR !$this->_loadQueue()) { return false; }
         return true;
     }
 
+    /**
+     * Sets the model settings and prepares itself for tracking changes
+     *
+     * @param object $model Passed by setup callback caller
+     * @param array $settings Settings for the behavior, to be merged with defaults
+     * @return boolean Result of setting up new instance
+     * @access public
+     */
     function setup( &$model, $settings = array() ) {
-        if(empty($model)) { return true; } // must be doing an in place thing
+        if(empty($model)) { return true; } // must be floating instance, no need to set anything up
         $this->_with_models = true;
         $this->models[$model->alias] = $model;
-        if($model->alias != $model->name) { return false; } // we don't want any funky models
         if (!is_array($settings)) {
             $settings = $this->_default_settings;
         }else {
             $settings = array_merge($this->_default_settings, $settings);
         }
+
+        if(empty($settings['allowAlternativeAliases']) AND $settings['allowAlternativeAliases'] === false AND ($model->alias != $model->name)) {
+            return false; // we don't really want models with aliases that are different than their names
+        }
+
         if(isset($model->smartMirror)) {
             if(!is_array($model->smartMirror)) {
                 $temp_model = false;
@@ -52,46 +119,35 @@ class SmartMirrorBehavior extends ModelBehavior {
         }
     }
 
+    /**
+     * Save queue and stats as we deconstruct
+     *
+     * @return boolean Result of saving queue and stats
+     * @access private
+     */
     function __destruct() {
-		/*
-foreach($this->_smartMirrors as $model => $mirrors){
-			foreach($mirrors as $mirror => $settings){
-				unset($this->_smartMirrors[$model][$mirror]['model']);
-				unset($this->_smartMirrors[$model][$mirror]['mirrorModel']);
-			}
-		}
-		debug($this->_smartMirrors);exit;
-*/
-		/*
-debug($this->_queue);
-		debug($this->_stats);
-*/
         if($this->_with_models === true) {
             $this->_saveQueue();
             $this->_saveStats();
         }
     }
 
-    private function _log($msg, $min_level = 2, $force = false) {
-        $levels = array('0' => 'Fatal Error', '1' => 'Error', '2' => 'Warning', '3' => 'Notice', '4' => 'Action');
-        if($this->_log_level >= $min_level OR $force) {
-            $caller = next(debug_backtrace());
-            $msg = '('. $levels[$min_level] ." at {$caller['file']}:{$caller['function']}:{$caller['line']}) ". $msg;
-            $msg .= "";
-            $write = CakeLog::write('smart_mirror', $msg);
-            if($min_level == 0) { die($msg); }
-            return $write;
-        }
-        return true;
-    }
-
-	private function _doICare($model_name, $mirror_name, $id){
-		if(empty($id)){
-			$this->_log('Do I Care function ran with empty ID', 1);
-			die("DoICare function ran with empty ID");
+    /**
+     * Especially when we have custom find options, sometimes we don't care about a specific ID
+     *
+     * @param string $model_name The name of the primary model
+     * @param string $mirror_name The name of the secondary model
+     * @param mixed $id The primary key value of the entry in question
+     * @return boolean Result of the question "Do we care about this entry?"
+     * @access private
+     */
+    private function _doICare($model_name, $mirror_name, $id) {
+        if(empty($id)) {
+            $this->_log('Do I Care function ran with empty ID', 1);
+            die("DoICare function ran with empty ID");
             return false;
-		}
-		if(empty($this->_smartMirrors[$model_name])) {
+        }
+        if(empty($this->_smartMirrors[$model_name])) {
             $this->_log('Action called on a model ('. $model_name .') which hasn\'t been loaded', 1);
             return false;
         }
@@ -104,13 +160,23 @@ debug($this->_queue);
         if(!isset($find_options['conditions'])) { $find_options['conditions'] = array(); }
         $find_options['conditions'][] = array($model_name .'.'. $primary_model->primaryKey => $id);
         $data_count = $primary_model->find('count', $find_options);
-        if($data_count > 0){
-        	return true;
-       	}else{
-       		return false;
-       	}
-	}
-	
+        if($data_count > 0) {
+            return true;
+        }else {
+            return false;
+        }
+    }
+
+    /**
+     * Actually performs a specific action
+     *
+     * @param string $action The action we want to perform
+     * @param string $model_name The primary model name
+     * @param mixed $data Data for the action
+     * @param int $time Unix timestamp of action
+     * @return boolean Result of performing action
+     * @access private
+     */
     private function _doAction($action, $model_name, $data, $time = null) {
         if(is_null($time)) { $time = time(); }
         if(empty($this->_smartMirrors[$model_name])) {
@@ -132,22 +198,22 @@ debug($this->_queue);
             }
             $mirror_model = $this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'];
             $primary_model = $this->_smartMirrors[$model_name][$mirror_name]['model'];
-            
-			if(!$this->_doICare($model_name, $mirror_name, $data[$model_name][$primary_model->primaryKey])){
-				$this->_log("Action $action ($model_name -> $mirror_name for id#{$data[$model_name][$primary_model->primaryKey]} was skipped because we don't care about it.", 3);
-				continue;
-			}
+
+            if(!$this->_doICare($model_name, $mirror_name, $data[$model_name][$primary_model->primaryKey])) {
+                $this->_log("Action $action ($model_name -> $mirror_name for id#{$data[$model_name][$primary_model->primaryKey]} was skipped because we don't care about it.", 3);
+                continue;
+            }
             if(empty($mirror_model) OR empty($primary_model)) {
                 $this->_log('Either the main model or the mirrored model failed to load', 0);
             }
-            
+
             $primaryKey = $mirror_model->primaryKey;
             switch($action) {
                 case 'create':
                     $packaged_data = $this->_buildDataPackage($model_name, $mirror_name, $data);
                     $mirror_model->create();
                     $mresult = $mirror_model->save($packaged_data);
-                    if(!empty($mresult)){ $mresult = true; }else{ $mresult = false; }
+                    if(!empty($mresult)) { $mresult = true; }else { $mresult = false; }
                     $results[] = $mresult;
                     if($mresult) {
                         $this->_log("Successful $action action on $model_name -> $mirror_name", 4);
@@ -203,6 +269,16 @@ debug($this->_queue);
         return min($results);
     }
 
+    /**
+     * Tests to see if a primary model is identical to a mirror model
+     * WARNING: This function has NOT been tested!!!
+     *
+     * @param object $model This should be passed when running it from within the model itself
+     * @param string $model_name The name of the primary model
+     * @param string $mirror_name The name of the mirror model
+     * @return boolean Result of testing if model_name is identical to mirror_name
+     * @access public
+     */
     public function isMirrorIdentical(&$model, $model_name, $mirror_name) {
         if(empty($this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'])) {
             $this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'] =& ClassRegistry::init($model_name);
@@ -235,6 +311,15 @@ debug($this->_queue);
         return true;
     }
 
+    /**
+     * Adds and action to the queue
+     *
+     * @param string $action Name of the action to queue
+     * @param string $model_name Name of the primary model
+     * @param mixed $data Data used in action
+     * @return string Unique identifier of action inside queue
+     * @access private
+     */
     private function _queueAction($action, $model_name, $data) {
         if(is_null($this->_queue)) {
             $this->_loadQueue();
@@ -252,6 +337,12 @@ debug($this->_queue);
         return $uid;
     }
 
+    /**
+     * Runs the queue of actions
+     *
+     * @return boolean Result of running the queue
+     * @access private
+     */
     public function runQueue() {
         if(is_null($this->_queue)) {
             $this->_loadQueue();
@@ -289,6 +380,12 @@ debug($this->_queue);
         }
     }
 
+    /**
+     * Is the queue empty?
+     *
+     * @return boolean Empty state of queue
+     * @access private
+     */
     public function isQueueEmpty() {
         if(is_null($this->_queue)) {
             $this->_loadQueue();
@@ -300,10 +397,16 @@ debug($this->_queue);
         return false;
     }
 
+    /**
+     * Makes $mirror_name identical to $model_name
+     *
+     * @param string $model_name The name of the primary model
+     * @param string $mirror_name The name of the mirror model
+     * @param boolean $truncate Empty $mirror_name before (clean dump... no longer smart ;))
+     * @return boolean Result of smart mirror
+     * @access private
+     */
     private function _smartMirror($model_name, $mirror_name, $truncate = false) {
-    // force truncate!
-    // $truncate = true;
-
         if(empty($this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'])) {
             $this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'] =& ClassRegistry::init($model_name);
         }
@@ -314,14 +417,13 @@ debug($this->_queue);
         }
         $errors = false;
         $find_options = $this->_smartMirrors[$model_name][$mirror_name]['findOptions'];
-        //debug($find_options);
         if(!isset($find_options['contain'])) { $find_options['contain'] = false; }
         $primary_results = $model->find('all', $find_options);
         if($truncate) {
             $tresult = $mirror_model->query('TRUNCATE TABLE '. $mirror_model->tablePrefix.$mirror_model->table);
             $mirror_results = array();
             if(!$tresult) {
-            	$this->_log('Failed to truncate table (model: '. $mirror_name.'): '. $mirror_model->tablePrefix.$mirror_model->table, 3);
+                $this->_log('Failed to truncate table (model: '. $mirror_name.'): '. $mirror_model->tablePrefix.$mirror_model->table, 3);
             }
         }else {
             $mirror_results = $mirror_model->find('all', array('contain' => false));
@@ -367,6 +469,15 @@ debug($this->_queue);
         return !$errors;
     }
 
+    /**
+     * Builds package from $model_name to be shipped off to $mirror_name
+     *
+     * @param string $model_name The name of the primary model
+     * @param string $mirror_name The name of the mirror model
+     * @param array $primary_data Data to be packaged
+     * @return array Packaged data
+     * @access private
+     */
     private function _buildDataPackage($model_name, $mirror_name, $primary_data = array()) {
         if(empty($primary_data)) { return false; }
         $data = array($mirror_name => array());
@@ -382,10 +493,25 @@ debug($this->_queue);
         return $data;
     }
 
+    /**
+     * This clears what we know about the $model_name's mirrors and remirrors all of them
+     *
+     * @param object $model Model to be sent from public caller
+     * @param string $model_name The name of the primary model
+     * @return boolean Result of resetting model
+     * @access public
+     */
     public function resetModel(&$model, $model_name) {
         return $this->_initModel($model_name, true, true);
     }
 
+    /**
+     * Smart mirrors all models and all models' mirrors
+     *
+     * @param boolean $force Force initialization of queue even if it isn't NULL
+     * @return boolean Result of initiating queue
+     * @access private
+     */
     public function smartMirrorAll(&$model, $model_name = false, $force_truncate = false) {
         $results = array();
         if(empty($model_name)) {
@@ -406,10 +532,20 @@ debug($this->_queue);
             $mirror_results_count = $mirror_model->find('count');
             $results[] = $this->_smartMirror($model_name, $mirror_name, $force_truncate);
         }
-        if(empty($results)){ return true; }
+        if(empty($results)) { return true; }
         return min($results);
     }
 
+    /**
+     * If we aren't forcing it and we don't have any history of mirroring a model, start fresh with a
+     *		clean smart mirror
+     *
+     * @param string $model_name The name of the primary model
+     * @param boolean $force Force initialization of queue even if it isn't NULL
+     * @param boolean $force_truncate Force the clearing of the mirror data
+     * @return boolean Result of initiating model and all of its mirrors
+     * @access private
+     */
     private function _initModel($model_name, $force = false, $force_truncate = false) {
         if(isset($this->_stats[$model_name]) AND !$force) {
             return false;
@@ -438,6 +574,13 @@ debug($this->_queue);
         return min($results);
     }
 
+    /**
+     * Initiates stats array
+     *
+     * @param boolean $force Force initialization of stats even if it isn't NULL
+     * @return boolean Result of initiating queue
+     * @access private
+     */
     private function _initStats($force = false) {
         if(!is_null($this->_stats) AND !$force) {
             return false;
@@ -446,9 +589,14 @@ debug($this->_queue);
         return $this->_saveStats();
     }
 
+    /**
+     * Loads stats from cache file
+     *
+     * @return boolean Result of loading stats
+     * @access private
+     */
     private function _loadStats() {
         if(!is_null($this->_stats)) {
-        // already loaded
             return true;
         }
         $result = Cache::read('stats', 'smart_mirror');
@@ -460,6 +608,12 @@ debug($this->_queue);
         }
     }
 
+    /**
+     * Saves statistics on push history for model
+     *
+     * @return boolean Result of saving stats
+     * @access private
+     */
     private function _saveStats() {
         if(is_null($this->_stats)) {
         // stats haven't been loaded yet
@@ -468,6 +622,13 @@ debug($this->_queue);
         return Cache::write('stats', $this->_stats, 'smart_mirror');
     }
 
+    /**
+     * Initiates a queue of actions
+     *
+     * @param boolean $force Force initialization of queue even if it isn't NULL
+     * @return boolean Result of initiating queue
+     * @access private
+     */
     private function _initQueue($force = false) {
         if(!is_null($this->_queue) AND !$force) {
             return false;
@@ -476,6 +637,12 @@ debug($this->_queue);
         return $this->_saveQueue();
     }
 
+    /**
+     * Loads a queue from the queue's cache file
+     *
+     * @return boolean Result of loading queue
+     * @access private
+     */
     private function _loadQueue() {
         if(!is_null($this->_queue)) {
         // already loaded
@@ -490,6 +657,12 @@ debug($this->_queue);
         }
     }
 
+    /**
+     * Saves a queue to the queue's cache file
+     *
+     * @return boolean Result of saving queue
+     * @access private
+     */
     private function _saveQueue() {
         if(is_null($this->_queue)) {
         // queue hasn't been loaded yet
@@ -498,6 +671,13 @@ debug($this->_queue);
         return Cache::write('queue', $this->_queue, 'smart_mirror');
     }
 
+    /**
+     * Callback for associated models when creating/updating an entry
+     *
+     * @param boolean $created If the save is a new entry
+     * @return boolean Result of adding command to queue
+     * @access public
+     */
     function afterSave( &$model, $created  ) {
         if(empty($this->_smartMirrors[$model->alias])) { return true; }
 
@@ -561,12 +741,13 @@ debug($this->_queue);
         return $result;
     }
 
-    function beforeDelete( &$model , $cascade ) {
-        if(empty($this->_smartMirrors[$model->alias])) { return true; }
-        // really?
-        return true;
-    }
 
+    /**
+     * Callback for associated models when deleting an entry
+     *
+     * @return boolean Result of adding command to queue
+     * @access public
+     */
     function afterDelete( &$model  ) {
         if(empty($this->_smartMirrors[$model->alias])) { return true; }
         $result = null;
@@ -575,6 +756,13 @@ debug($this->_queue);
         return $result;
     }
 
+    /**
+     * Tests if a model's database is connected
+     *
+     * @param string Name of model to test
+     * @return boolean $model_name Connection status of a model's database
+     * @access private
+     */
     private function _isConnected($model_name) {
         if(isset($this->_smartMirrors[$model_name]['dbConfig'])) {
             if(in_array($this->_smartMirrors[$model_name]['dbConfig'], ConnectionManager::sourceList())) {
@@ -584,6 +772,14 @@ debug($this->_queue);
         return false;
     }
 
+    /**
+     * Generates a basic field map (when one isn't included) from the primary to secondary model
+     *
+     * @param string $primary Name of primary model
+     * @param string $secondary Name of secondary model
+     * @return array Map of fields
+     * @access private
+     */
     private function generateMap($primary, $secondary) {
         $primary_schema = $this->models[$primary]->schema();
         if(empty($primary_schema)) { return false; }
@@ -593,6 +789,28 @@ debug($this->_queue);
         }
         return $map;
     }
+
+    /**
+     * Our log helper function
+     *
+     * @param string $msg The message we want to pass to the log file
+     * @param int $min_level The minimum log level that we want to report this message
+     * @return boolean Result of saving log
+     * @access private
+     */
+    private function _log($msg, $min_level = 2, $force = false) {
+        $levels = array('0' => 'Fatal Error', '1' => 'Error', '2' => 'Warning', '3' => 'Notice', '4' => 'Action');
+        if($this->_log_level >= $min_level OR $force) {
+            $caller = next(debug_backtrace());
+            $msg = '('. $levels[$min_level] ." at {$caller['file']}:{$caller['function']}:{$caller['line']}) ". $msg;
+            $msg .= "";
+            $write = CakeLog::write('smart_mirror', $msg);
+            if($min_level == 0) { die($msg); }
+            return $write;
+        }
+        return true;
+    }
+
     /**
      * Gets a reference to the ConnectionManger object instance
      *
