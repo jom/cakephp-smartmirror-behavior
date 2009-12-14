@@ -1,6 +1,6 @@
 <?php
 /**
- * SmartMirror, CakePHP Behavior
+ * SmartMirror, CakePHP Behavior v0.4
  * 		Mirrors data from one model to another
  *
  *
@@ -9,6 +9,7 @@
  * Licensed under The MIT License
  * Redistributions of files must retain the above copyright notice.
  *
+ * @version		  0.4
  * @copyright     Copyright 2009 Jacob Morrison <jomorrison gmail com>, http://projects.ofjacob.com
  * @license       http://www.opensource.org/licenses/mit-license.php The MIT License
  */
