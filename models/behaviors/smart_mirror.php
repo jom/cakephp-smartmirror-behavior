@@ -1,6 +1,6 @@
 <?php
 /**
- * SmartMirror, CakePHP Behavior v0.4
+ * SmartMirror, CakePHP Behavior
  * 		Mirrors data from one model to another
  *
  *
@@ -9,7 +9,6 @@
  * Licensed under The MIT License
  * Redistributions of files must retain the above copyright notice.
  *
- * @version		  0.4
  * @copyright     Copyright 2009 Jacob Morrison <jomorrison gmail com>, http://projects.ofjacob.com
  * @license       http://www.opensource.org/licenses/mit-license.php The MIT License
  */
@@ -409,7 +408,7 @@ class SmartMirrorBehavior extends ModelBehavior {
      */
     private function _smartMirror($model_name, $mirror_name, $truncate = false) {
         if(empty($this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'])) {
-            $this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'] =& ClassRegistry::init($model_name);
+            $this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'] =& ClassRegistry::init($mirror_name);
         }
         $mirror_model = $this->_smartMirrors[$model_name][$mirror_name]['mirrorModel'];
         $model = $this->_smartMirrors[$model_name][$mirror_name]['model'];
@@ -439,10 +438,13 @@ class SmartMirrorBehavior extends ModelBehavior {
             $field_map = $this->_smartMirrors[$model_name][$mirror_name]['fieldMap'];
             if(!$truncate) {
                 $do_update = false;
+                $primary_result = Set::extract('/'. $model_name .'['. $model->primaryKey .'='. $result_id .']', $mirror_results);
+                $mirror_result = Set::extract('/'. $mirror_name .'['. $mirror_model->primaryKey .'='. $result_id .']', $mirror_results);
+                if(empty($mirror_result)){ $do_update = true; };
                 foreach($field_map as $primary_key => $mirror_key) {
                     if($do_update) { continue; }
-                    $result_primary = Set::classicExtract($primary_results, $result_id.'.'. $primary_key);
-                    $result_mirror = Set::classicExtract($mirror_results, $result_id.'.'. $mirror_key);
+                    $result_primary = Set::classicExtract($primary_results, '0.'. $primary_key);
+                    $result_mirror = Set::classicExtract($mirror_results, '0.'. $mirror_key);
                     if($result_primary !== $result_mirror) {
                         $do_update = true;
                     }
